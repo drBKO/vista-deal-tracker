@@ -1,23 +1,20 @@
+# vista_deal_tracker.py
 import requests
 from bs4 import BeautifulSoup
 import time
 import logging
-import webbrowser
-import os
+import boto3  # AWS library for interacting with S3
 
-# Set up logging
+# Set up logging to help debug if something goes wrong
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 base_url = "https://vistaauction.com/Browse/C26985692/Electronics"
-FILENAME = "live_deals.html"  # Single persistent filename
 
 def parse_item(item):
-    """Parses individual item elements to extract details"""
+    """Exactly the same as your original version - no changes needed!"""
     try:
-        # Extract name
         name = item.find("h2", class_="title").find("a").text.strip()
 
-        # Extract price
         try:
             price_text = item.find("span", class_="awe-rt-CurrentPrice").text.strip()
             current_price = float(price_text.replace('$', '').replace(',', ''))
@@ -25,42 +22,34 @@ def parse_item(item):
             logging.warning(f"Failed to extract price: {e}")
             return None
 
-        # Initialize values
         condition = "N/A"
         msrp = None
         subtitle_text = ""
 
-        # Extract subtitle text
         try:
             subtitle_element = item.find("h3", class_="subtitle").find("a")
             subtitle_text = subtitle_element.text.strip() if subtitle_element else ""
             
             parts = subtitle_text.split(" - ")
             
-            # Extract MSRP
             if "MSRP:" in subtitle_text:
                 msrp_str = parts[0].split("MSRP: $")[1].split()[0]
                 msrp = float(msrp_str.replace(',', ''))
             
-            # Extract condition
             condition_part = parts[1] if len(parts) >= 2 else subtitle_text
             condition = condition_part.split(" - ")[0].strip()
             
         except Exception as e:
             logging.warning(f"Failed to parse subtitle: {e}")
 
-        # Skip items without MSRP or invalid pricing
         if not msrp or current_price <= 0 or msrp <= 0:
             return None
 
-        # Calculate discount percentage
         discount = ((msrp - current_price) / msrp) * 100
         
-        # Filter for 60-99.99% discounts
         if not (60 <= discount < 100):
             return None
 
-        # Extract listing link
         try:
             listing_link = item.find("h2", class_="title").find("a")["href"]
             if not listing_link.startswith("http"):
@@ -82,8 +71,7 @@ def parse_item(item):
         return None
 
 def generate_html(filtered_items):
-    """Generates auto-refreshing HTML with latest deals"""
-    # Properly indented HTML construction
+    """Modified to RETURN HTML instead of saving to file"""
     html = f"""
     <html>
     <head>
@@ -125,8 +113,7 @@ def generate_html(filtered_items):
             <th>Link</th>
         </tr>
     """
-
-    # Properly indented table rows
+    
     for item in filtered_items:
         html += f"""
         <tr>
@@ -141,7 +128,6 @@ def generate_html(filtered_items):
         </tr>
         """
 
-    # Properly indented closing tags
     html += """
     </table>
     </body>
@@ -150,9 +136,9 @@ def generate_html(filtered_items):
     return html
 
 def scan_pages():
-    """Scans first 5 pages continuously"""
+    """Same as your original version - no changes needed!"""
     all_items = []
-    for page in range(1, 6):  # Only pages 1-5
+    for page in range(1, 6):
         try:
             url = f"{base_url}?page={page}"
             response = requests.get(url)
@@ -162,39 +148,43 @@ def scan_pages():
         except Exception as e:
             logging.error(f"Error scanning page {page}: {e}")
     
-    # Filter valid items and remove duplicates
     return [i for i in all_items if i is not None]
 
-def update_display():
-    """Updates the HTML file and keeps browser open"""
-    deals = scan_pages()
-    html = generate_html(deals)
-    
-    # Write to same file every time
-    with open(FILENAME, "w", encoding="utf-8") as f:
-        f.write(html)
-    
-    # Only open browser once
-    if not os.path.isfile(FILENAME + ".lock"):
-        webbrowser.open(f"file://{os.path.abspath(FILENAME)}")
-        open(FILENAME + ".lock", "w").close()  # Create lock file
+# This is the NEW AWS-specific part that replaces your original main()
+def lambda_handler(event, context):
+    """
+    This function will be called by AWS Lambda every time it runs
+    """
+    try:
+        logging.info("Starting deal scan...")
+        deals = scan_pages()
+        
+        logging.info(f"Found {len(deals)} valid deals")
+        html_content = generate_html(deals)
+        
+        # Upload to AWS S3 bucket
+        s3 = boto3.client('s3')
+        s3.put_object(
+            Bucket='vista-deal-tracker',  # Must match your S3 bucket name
+            Key='index.html',
+            Body=html_content,
+            ContentType='text/html'
+        )
+        
+        logging.info("Successfully updated website!")
+        return {
+            'statusCode': 200,
+            'body': 'Website updated successfully'
+        }
+        
+    except Exception as e:
+        logging.error(f"Critical error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': 'Error updating website'
+        }
 
-def main():
-    # Initial setup
-    if os.path.exists(FILENAME):
-        os.remove(FILENAME)
-    
-    # Continuous scanning
-    while True:
-        try:
-            update_display()
-            logging.info("Updated deals display")
-            time.sleep(5)  # 5 second interval
-        except KeyboardInterrupt:
-            logging.info("Stopping tracker...")
-            if os.path.exists(FILENAME + ".lock"):
-                os.remove(FILENAME + ".lock")
-            break
-
+# For local testing (optional)
 if __name__ == "__main__":
-    main()
+    # Test the lambda handler locally
+    lambda_handler(None, None)
